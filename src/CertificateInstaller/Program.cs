@@ -6,7 +6,7 @@
 
 	Copyright (c) 2024 Otto
 	Автор: Otto
-	Версия: 26.06.24
+	Версия: 27.09.24
 	GitHub страница:  https://github.com/Otto17/CertificateInstaller
 	GitFlic страница: https://gitflic.ru/project/otto/certificateinstaller
 
@@ -60,16 +60,18 @@ namespace CertificateInstaller
 
                 Console.ForegroundColor = ConsoleColor.Blue; // Устанавливаем синий цвет для строк ниже
                 Console.WriteLine("Примеры:");
-                Console.WriteLine("CertificateInstaller \"CurrentUser\" \"My\" \"cert.pfx\" \"pass123\"");
+                Console.WriteLine("CertificateInstaller \"CurrentUser\" \"Auto\" \"cert.pfx\" \"pass123\"");
+                Console.WriteLine("CertificateInstaller \"CurrentUser\" \"My\" \"cert.spc\"");
                 Console.WriteLine("CertificateInstaller \"LocalMachine\" \"Root\" \"cert.p12\" \"pass123\" \"true\" \"true\"");
-                Console.WriteLine("CertificateInstaller \"LocalMachine\" \"CA\" \"cert.cer\" \"false\" \"false\"");
-                Console.WriteLine("CertificateInstaller \"CurrentUser\" \"TrustedPeople\" \"cert.pb7\" \"true\" \"false\"\n");
+                Console.WriteLine("CertificateInstaller \"LocalMachine\" \"CA\" \"cert.cer\"");
+                Console.WriteLine("CertificateInstaller \"CurrentUser\" \"TrustedPeople\" \"cert.p7b\"\n");
 
                 Console.ForegroundColor = ConsoleColor.Red; // Устанавливаем красный цвет для строки ниже
                 Console.WriteLine("Для блокировки мыши и клавиатуры (во время подтверждения всплывающих окон безопасности) программа должна быть запущена с правами администратора!\n");
                 Console.ResetColor(); // Сбрасываем цвет на стандартный
 
                 Console.WriteLine("Список названий хранилищ сертификатов:");
+                Console.WriteLine("\"Auto\"             - Автоматически выбрать хранилище на основе типа сертификата");
                 Console.WriteLine("\"My\"               - Личные");
                 Console.WriteLine("\"Root\"             - Доверенные корневые центры сертификации");
                 Console.WriteLine("\"Trust\"            - Доверительные отношения в предприятии");
@@ -92,8 +94,8 @@ namespace CertificateInstaller
             string storeName = args[1];                                             // Получаем второй аргумент
             string certPath = args[2];                                              // Получаем третий аргумент
             string certPassword = args.Length > 3 ? args[3] : null;                 // Получаем четвёртый аргумент, если длина массива больше 3, иначе присваивается "null"
-            bool exportable = args.Length > 4 ? bool.Parse(args[4]) : false;        // Получаем пятый аргумент, преобразованное его в тип "bool", если длина массива больше 4, иначе присваивается "false"
-            bool includeProperties = args.Length > 5 ? bool.Parse(args[5]) : true;  // Получаем шестой аргумент, преобразованное его в тип "bool", если длина массива больше 5, иначе присваивается "true"
+            bool exportable = args.Length > 4 && bool.Parse(args[4]);        // Получаем пятый аргумент, преобразованное его в тип "bool", если длина массива больше 4, иначе присваивается "false"
+            bool includeProperties = args.Length <= 5 || bool.Parse(args[5]);  // Получаем шестой аргумент, преобразованное его в тип "bool", если длина массива больше 5, иначе присваивается "true"
 
             StoreLocation storeLocation;    // Переменная для выбора хранилища установки сертификата
 
@@ -112,10 +114,17 @@ namespace CertificateInstaller
                 return;
             }
 
+            // Автоматический выбор хранилища, если используется флаг "Auto"
+            if (storeName.Equals("Auto", StringComparison.OrdinalIgnoreCase))
+            {
+                storeName = "Auto";
+            }
+
+
             try
             {
                 //Создание и запуск нового потока для автоматического подтверждения диалогового окна безопасности
-                Thread promptHandlerThread = new Thread(AutoConfirmDialog);
+                Thread promptHandlerThread = new(AutoConfirmDialog);
                 promptHandlerThread.Start();
 
                 //Вызываем метод для установки сертификата с заданными параметрами
@@ -150,8 +159,8 @@ namespace CertificateInstaller
             }
 
             //Определение типа файла сертификата
-            string extension = System.IO.Path.GetExtension(certPath).ToLower();         // Определяется тип файла сертификата по расширению "certPath" и приводится к нижнему регистру
-            X509Certificate2Collection certificates = new X509Certificate2Collection(); // Создаётся коллекция "certificates" типа "X509Certificate2Collection"
+            string extension = System.IO.Path.GetExtension(certPath).ToLower(); // Определяется тип файла сертификата по расширению "certPath" и приводится к нижнему регистру
+            X509Certificate2Collection certificates = [];                       // Создаётся коллекция "certificates" типа "X509Certificate2Collection"
 
             switch (extension)  // Проверяется тип расширения файла сертификата
             {
@@ -172,7 +181,7 @@ namespace CertificateInstaller
                 case ".cer":
                 case ".crt":
                 case ".spc":
-                    X509Certificate2 cert = new X509Certificate2(certPath);
+                    X509Certificate2 cert = new(certPath);
                     certificates.Add(cert);
                     break;
 
@@ -185,15 +194,43 @@ namespace CertificateInstaller
                     throw new InvalidOperationException("Неподдерживаемый формат сертификата!");
             }
 
-            //Открытие хранилища сертификатов
-            X509Store store = new X509Store(storeName, storeLocation);  // Создаём новое хранилище сертификатов "X509Store" с указанным именем и расположением
-            store.Open(OpenFlags.ReadWrite);                            // Открываем хранилище для чтения и записи
-
-            foreach (X509Certificate2 cert in certificates)
+            //Определение типа сертификата для его автоматической установки в хранилище "Root" или "My"
+            foreach (X509Certificate2 certificate in certificates)
             {
-                store.Add(cert);    // Добавление всех сертификатов в хранилище
+                //Определение, является ли сертификат корневым "CA"
+                bool isCA = false;  // Является ли сертификат корневым или нет
+
+                //Перебираем все расширения сертификата
+                foreach (var ext in certificate.Extensions)
+                {
+                    //Для каждой "ext" проверяется, является ли она экземпляром класса "X509BasicConstraintsExtension". Затем проверяется свойство "CertificateAuthority" у объекта "basicConstraints"
+                    if (ext is X509BasicConstraintsExtension basicConstraints && basicConstraints.CertificateAuthority)
+                    {
+                        isCA = true;    // Сертификат является "CA"
+                        break;
+                    }
+                }
+
+                //Если сертификат корневой, устанавливаем в хранилище "Root"
+                if (isCA)
+                {
+                    storeName = "Root"; // Корневой сертификат -> хранилище "Root"
+                }
+                else
+                {
+                    //Устанавливаем все остальные (не корневые) сертификаты в "Личные"
+                    storeName = "My"; // Личные сертификаты
+                }
+
+                //Открытие хранилища сертификатов
+                using (X509Store store = new(storeName, storeLocation))   // Создаём новое хранилище сертификатов "X509Store" с указанным именем и расположением
+                {
+                    store.Open(OpenFlags.ReadWrite);    // Открываем хранилище для чтения и записи
+                    store.Add(certificate);             // Добавление всех сертификатов в хранилище
+                    store.Close();                      // Закрываем хранилище
+                }
             }
-            store.Close();  // Закрываем хранилище
+
         }
 
 
